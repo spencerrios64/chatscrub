@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#be123c">
+<title>chatscrub</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1b1f24; --mut:#667085; --line:#d8dee4; --card:#f6f8fa; --acc:#be123c; --warn:#b45309; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --mut:#8b949e; --line:#30363d; --card:#161b22; --acc:#fb7185; --warn:#fbbf24; } }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; max-width:760px; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, sans-serif; }
+  h1 { font-size:1.4rem; margin:0; }
+  h2 { font-size:1.05rem; margin:22px 0 6px; }
+  .mut { color:var(--mut); font-size:.875rem; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0; }
+  button, .btn, select, input, textarea { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 12px; min-height:42px; }
+  button, .btn { background:var(--card); cursor:pointer; display:inline-flex; align-items:center; }
+  button.main, .btn.main { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button.small { min-height:32px; padding:2px 10px; font-size:.85rem; }
+  button:disabled { opacity:.45; cursor:default; }
+  input[type=checkbox] { min-height:0; width:18px; height:18px; padding:0; }
+  textarea { width:100%; resize:vertical; }
+  label.opt { display:flex; gap:8px; align-items:center; min-height:36px; }
+  table { width:100%; border-collapse:collapse; margin:8px 0; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:8px 0; overflow-wrap:anywhere; }
+  .pre { white-space:pre-wrap; }
+  details { border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
+  summary { cursor:pointer; }
+  li { margin:4px 0; }
+  a { color:var(--acc); }
+  #text, #clean { min-height:160px; font:.85rem/1.45 ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>chatscrub</h1>
+<p>Remove API keys, emails, phone numbers and other private details from AI chats before you share or archive them.
+<span class="mut">Everything happens in this browser. Nothing is uploaded.</span></p>
+
+<h2>What to remove</h2>
+<div id="opts"></div>
+<label class="mut" for="words">Your own words to remove (names, addresses, usernames…), one per line or separated by commas</label>
+<textarea id="words" rows="2" spellcheck="false"></textarea>
+
+<h2>Scrub export files</h2>
+<div class="row">
+  <label class="btn main">Pick files
+    <input id="file" type="file" accept=".zip,.json,.txt,.md,.csv,.log,application/zip,application/json,text/*" multiple hidden>
+  </label>
+  <button id="go" disabled>Download scrubbed zip</button>
+</div>
+<p class="mut" id="status" role="status">Pick AI export files (.zip or .json) or plain text files. The scrubbed exports keep their format: unzip the result and its .json files still load in chatzip and the other tools.</p>
+<table id="sum" hidden>
+  <thead><tr><th>Removed</th><th class="n">Times</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2>Or scrub pasted text</h2>
+<textarea id="text" placeholder="Paste a chat or any text here…" aria-label="Text to scrub" spellcheck="false"></textarea>
+<div class="row"><button id="copy" disabled>Copy scrubbed text</button><span class="mut" id="tsum"></span></div>
+<textarea id="clean" readonly aria-label="Scrubbed text" spellcheck="false"></textarea>
+
+<h2>What it can and can't catch</h2>
+<ul class="mut">
+  <li>It works by pattern. It catches things with a recognisable shape: keys from OpenAI, Anthropic, Google, GitHub, Groq, Slack, AWS and Hugging Face, private key blocks, login tokens, emails, card numbers and phone numbers.</li>
+  <li>It <b>cannot</b> know that a word is a name, an address or a secret password. Add those to the list above.</li>
+  <li>Check the result yourself before you publish anything. A key that was ever pasted into a chat should be replaced with a new one anyway.</li>
+</ul>
+<p class="mut">Part of the same family as <a href="https://github.com/spencerrios64/chatvault">chatvault</a>, <a href="https://spencerrios64.github.io/chatzip/">chatzip</a> and <a href="https://spencerrios64.github.io/chatrelay/">chatrelay</a>.</p>
+<script>
+// ---------------------------------------------------------------- core (no DOM)
+const iso = v => {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return new Date(v > 1e11 ? v : v * 1000).toISOString();
+  if (typeof v === 'object') {
+    const d = v.$date, n = d && typeof d === 'object' ? d.$numberLong : d;
+    return n == null ? null : iso(isNaN(+n) ? String(n) : +n);
+  }
+  return String(v);
+};
+
+function stripHtml(html) {
+  const ent = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  return html.replace(/<br\s*\/?>|<\/(p|li|h\d|div|tr|pre)>/gi, '\n').replace(/<[^>]*>/g, '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&(\w+);/g, (m, n) => ent[n] || m).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// ChatGPT and DeepSeek both export a "mapping" tree of messages.
+function parseMapping(data) {
+  let deepseek = false;
+  const convs = data.map(c => {
+    const map = c.mapping || {};
+    let chain = [], node = c.current_node;
+    if (node) {
+      while (node && map[node]) { chain.push(map[node]); node = map[node].parent; }
+      chain.reverse();
+    } else {
+      node = map.root ? 'root' : Object.keys(map).find(k => !map[k].parent);
+      const seen = new Set();
+      while (node && map[node] && !seen.has(node)) {
+        seen.add(node); chain.push(map[node]);
+        const kids = map[node].children || [];
+        node = kids[kids.length - 1];
+      }
+    }
+    const messages = [];
+    for (const e of chain) {
+      const m = e.message;
+      if (!m) continue;
+      if (Array.isArray(m.fragments)) {
+        deepseek = true;
+        for (const f of m.fragments) {
+          const role = f.type === 'REQUEST' ? 'user' : f.type === 'RESPONSE' ? 'assistant' : null;
+          const text = String(f.content || '').trim();
+          if (role && text) messages.push({ role, text });
+        }
+        continue;
+      }
+      const role = (m.author || {}).role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      const text = ((m.content || {}).parts || []).filter(p => typeof p === 'string').join('\n').trim();
+      if (text) messages.push({ role, text });
+    }
+    return { title: c.title, date: iso(c.create_time || c.inserted_at || c.update_time || c.updated_at), messages };
+  });
+  return { ai: deepseek ? 'DeepSeek' : 'ChatGPT', convs };
+}
+
+function parseClaude(data) {
+  return { ai: 'Claude', convs: data.map(c => {
+    const messages = [];
+    for (const m of c.chat_messages || []) {
+      let text = (m.text || '').trim();
+      if (!text) text = (m.content || []).filter(b => b.type === 'text').map(b => b.text || '').join('\n').trim();
+      if (text) messages.push({ role: m.sender === 'human' ? 'user' : 'assistant', text });
+    }
+    return { title: c.name, date: iso(c.created_at), messages };
+  }) };
+}
+
+function parseGrok(data) {
+  return { ai: 'Grok', convs: data.conversations.map(c => {
+    const info = c.conversation || {}, messages = [];
+    for (const r of c.responses || []) {
+      const m = r.response || r, text = String(m.message || '').trim();
+      if (!text) continue;
+      const who = String(m.sender || '').toLowerCase();
+      messages.push({ role: who === 'human' || who === 'user' ? 'user' : 'assistant', text });
+    }
+    return { title: info.title, date: iso(info.create_time || info.created_at), messages };
+  }) };
+}
+
+// Google Takeout "My Activity" has one entry per prompt and no chat ids: group by day.
+function parseGemini(data) {
+  const days = new Map();
+  for (const it of data) {
+    if (!/gemini/i.test(it.header || '') || !it.title) continue;
+    const day = String(it.time || '').slice(0, 10) || 'undated';
+    const turn = [{ role: 'user', text: String(it.title).replace(/^Prompted\s+/, '').trim() }];
+    const reply = (it.safeHtmlItem || []).map(h => stripHtml(h.html || '')).join('\n').trim();
+    if (reply) turn.push({ role: 'assistant', text: reply });
+    if (!days.has(day)) days.set(day, []);
+    days.get(day).push({ time: String(it.time || ''), turn });
+  }
+  return { ai: 'Gemini', convs: [...days].map(([day, turns]) => ({
+    title: 'Gemini prompts', date: day === 'undated' ? null : day,
+    messages: turns.sort((a, b) => a.time.localeCompare(b.time)).flatMap(t => t.turn) })) };
+}
+
+// A chatvault archive: [{source, title, messages:[{role, text}]}]
+function parseArchive(data) {
+  const names = { claude: 'Claude', chatgpt: 'ChatGPT' }, by = new Map();
+  for (const c of data) {
+    const src = String(c.source || 'other'), ai = names[src] || src[0].toUpperCase() + src.slice(1);
+    if (!by.has(ai)) by.set(ai, []);
+    by.get(ai).push({ title: c.title, date: iso(c.created_at || c.updated_at),
+      messages: (c.messages || []).filter(m => (m.text || '').trim()).map(m => ({ role: m.role, text: m.text })) });
+  }
+  return [...by].map(([ai, convs]) => ({ ai, convs }));
+}
+
+// Returns [{ai, convs}] for one parsed JSON document, or [] when it isn't a chat export.
+function detect(doc) {
+  if (Array.isArray(doc) && doc.length && doc[0] && typeof doc[0] === 'object') {
+    const f = doc[0];
+    if ('mapping' in f) return [parseMapping(doc)];
+    if ('chat_messages' in f) return [parseClaude(doc)];
+    if ('header' in f && 'title' in f && 'time' in f) return [parseGemini(doc)].filter(g => g.convs.length);
+    if ('messages' in f && 'source' in f) return parseArchive(doc);
+  }
+  if (doc && Array.isArray(doc.conversations) && doc.conversations.some(c => c && c.responses)) return [parseGrok(doc)];
+  return [];
+}
+
+// Reads the chat files out of an export .zip (or a bare .json) without loading the whole zip.
+async function readExport(file) {
+  const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+  if (!(head[0] === 0x50 && head[1] === 0x4b)) return [{ name: file.name, doc: JSON.parse(await file.text()) }];
+  const tail = new DataView(await file.slice(Math.max(0, file.size - 65558)).arrayBuffer());
+  let e = -1;
+  for (let i = tail.byteLength - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('not a valid zip file');
+  const count = tail.getUint16(e + 10, true), cdSize = tail.getUint32(e + 12, true), cdOff = tail.getUint32(e + 16, true);
+  if (cdOff === 0xffffffff || count === 0xffff) throw new Error('zip is too large (zip64); unzip it and pick the .json files inside');
+  const cdBuf = await file.slice(cdOff, cdOff + cdSize).arrayBuffer();
+  const cd = new DataView(cdBuf), dec = new TextDecoder(), out = [];
+  for (let n = 0, p = 0; n < count && cd.getUint32(p, true) === 0x02014b50; n++) {
+    const method = cd.getUint16(p + 10, true), csize = cd.getUint32(p + 20, true);
+    const nlen = cd.getUint16(p + 28, true), xlen = cd.getUint16(p + 30, true), clen = cd.getUint16(p + 32, true);
+    const off = cd.getUint32(p + 42, true);
+    const name = dec.decode(new Uint8Array(cdBuf, p + 46, nlen));
+    p += 46 + nlen + xlen + clen;
+    const m = /(^|\/)(conversations[^\/]*|prod-grok-backend|MyActivity)\.json$/i.exec(name);
+    if (!m || (/^MyActivity$/i.test(m[2]) && !/gemini/i.test(name))) continue;
+    const lh = new DataView(await file.slice(off, off + 30).arrayBuffer());
+    const start = off + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
+    let stream = file.slice(start, start + csize).stream();
+    if (method === 8) stream = stream.pipeThrough(new DecompressionStream('deflate-raw'));
+    else if (method !== 0) throw new Error('unsupported zip compression');
+    out.push({ name, doc: JSON.parse(await new Response(stream).text()) });
+  }
+  return out;
+}
+
+
+// Reads every picked file and returns a flat list of chats.
+async function loadFiles(files, say) {
+  const chats = [], problems = [];
+  for (const file of files) {
+    say(`Reading ${file.name}…`);
+    try {
+      const found = (await readExport(file)).flatMap(d => detect(d.doc));
+      if (!found.length) problems.push(`${file.name}: no chats recognised`);
+      for (const g of found) for (const c of g.convs) if (c.messages.length)
+        chats.push({ ai: g.ai, title: String(c.title || 'Untitled'), date: (c.date || '').slice(0, 10), messages: c.messages });
+    } catch (err) { problems.push(`${file.name}: ${err.message}`); }
+  }
+  return { chats, problems };
+}
+
+const CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(b) {
+  let c = 0xffffffff;
+  for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+async function makeZip(files, onProgress) {
+  if (files.length > 65000) throw new Error('too many chats for one zip (limit 65,000)');
+  const enc = new TextEncoder(), parts = [], central = [], now = new Date();
+  const time = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const date = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  let offset = 0, done = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), raw = enc.encode(f.text), crc = crc32(raw);
+    let data = raw, method = 0;
+    if (typeof CompressionStream !== 'undefined') {
+      const s = new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+      data = new Uint8Array(await new Response(s).arrayBuffer());
+      method = 8;
+    }
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, method, true);
+    h.setUint16(10, time, true); h.setUint16(12, date, true); h.setUint32(14, crc, true);
+    h.setUint32(18, data.length, true); h.setUint32(22, raw.length, true); h.setUint16(26, name.length, true);
+    parts.push(h.buffer, name, data);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true);
+    c.setUint16(10, method, true); c.setUint16(12, time, true); c.setUint16(14, date, true); c.setUint32(16, crc, true);
+    c.setUint32(20, data.length, true); c.setUint32(24, raw.length, true); c.setUint16(28, name.length, true); c.setUint32(42, offset, true);
+    central.push(c.buffer, name);
+    offset += 30 + name.length + data.length;
+    if (offset > 0xfffffff0) throw new Error('the zip would be larger than 4 GB');
+    if (onProgress && ++done % 200 === 0) onProgress(done);
+  }
+  const cdSize = central.reduce((n, p) => n + p.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+}
+
+const luhn = s => {
+  let sum = 0, alt = false;
+  for (let i = s.length - 1; i >= 0; i--) { let d = +s[i]; if (alt) { d *= 2; if (d > 9) d -= 9; } sum += d; alt = !alt; }
+  return sum % 10 === 0;
+};
+const digits = s => s.replace(/\D/g, '');
+
+// Order matters: the most specific patterns run first. ok() can veto a match.
+const PATTERNS = [
+  { id: 'keys', label: 'API keys, tokens and private keys', on: true, tag: '[KEY REMOVED]',
+    re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|\b(?:sk-ant-[\w-]{20,}|sk-(?:proj-|or-v1-)?[\w-]{20,}|AIza[\w-]{30,}|gh[pousr]_\w{30,}|github_pat_\w{30,}|gsk_\w{30,}|hf_\w{30,}|xox[abprs]-[\w-]{10,}|A[KS]IA[0-9A-Z]{16}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})|\bBearer\s+[\w.~+\/-]{20,}=*/g },
+  { id: 'logins', label: 'Passwords inside links (https://user:pass@…)', on: true, tag: '[LOGIN REMOVED]',
+    re: /(?<=\b[a-z][\w+.-]*:\/\/)[^\s\/:@]+:[^\s\/@]+(?=@)/gi },
+  { id: 'emails', label: 'Email addresses', on: true, tag: '[EMAIL REMOVED]',
+    re: /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g },
+  { id: 'cards', label: 'Card numbers', on: true, tag: '[CARD REMOVED]',
+    re: /(?<![\w.-])\d(?:[ -]?\d){12,18}(?![\w-])/g, ok: m => luhn(digits(m)) },
+  { id: 'ips', label: 'IP addresses (can also hit version numbers like 1.2.3.4)', on: false, tag: '[IP REMOVED]',
+    re: /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g },
+  { id: 'phones', label: 'Phone numbers', on: true, tag: '[PHONE REMOVED]',
+    re: /(?<![\w.,:\/-])\+?\(?\d[\d\s().-]{7,17}\d(?![\w\/-])/g,
+    ok: m => { const n = digits(m).length; return n >= 9 && n <= 15 && !/^\d{4}[-.\/]\d{1,2}[-.\/]\d{1,2}|^\d{1,2}[-.\/]\d{1,2}[-.\/]\d{4}|\n/.test(m) && !/^\d+\.\d+$|^\d{1,3}(?:\.\d{1,3}){3}$/.test(m); } },
+];
+
+const parseWords = s => [...new Set(String(s).split(/[\n,]+/).map(w => w.trim()).filter(w => w.length >= 2))].sort((a, b) => b.length - a.length);
+
+// on: {patternId: true}. words: extra strings to remove. counts is updated in place.
+function scrub(text, on, words, counts) {
+  for (const p of PATTERNS) {
+    if (!on[p.id]) continue;
+    text = text.replace(p.re, m => {
+      if (p.ok && !p.ok(m)) return m;
+      counts[p.id] = (counts[p.id] || 0) + 1;
+      return p.tag;
+    });
+  }
+  if (words.length) {
+    const re = new RegExp(words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    text = text.replace(re, () => { counts.words = (counts.words || 0) + 1; return '[REMOVED]'; });
+  }
+  return text;
+}
+
+// Fields that hold ids and timestamps: changing them would break the export.
+const KEEP = /^(id|uuid|.*_id|.*_uuid|parent|children|current_node|.*_at|.*_time|time|sender|role|type|status|model.*|content_type|recipient)$/i;
+
+// Scrubs every text value inside an export document, leaving its structure alone.
+function scrubDoc(v, on, words, counts, key) {
+  if (typeof v === 'string') return key && KEEP.test(key) ? v : scrub(v, on, words, counts);
+  if (Array.isArray(v)) return key && KEEP.test(key) ? v : v.map(x => scrubDoc(x, on, words, counts, key));
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = scrubDoc(v[k], on, words, counts, k);
+    return o;
+  }
+  return v;
+}
+
+if (typeof module !== 'undefined') module.exports = { PATTERNS, scrub, scrubDoc, parseWords, luhn, detect };
+
+// ---------------------------------------------------------------- page
+if (typeof document !== 'undefined') {
+  const $ = id => document.getElementById(id);
+  const el = (tag, props, ...kids) => { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids); return n; };
+  const copy = async (text, btn) => {
+    const old = btn.textContent;
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; } catch (e) { btn.textContent = 'Copy failed'; }
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  };
+  const download = (name, blob) => {
+    const a = el('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  };
+  const LABEL = Object.fromEntries(PATTERNS.map(p => [p.id, p.label]));
+  LABEL.words = 'Your own words';
+  let inputs = [];  // {name, doc} or {name, text}
+
+  $('opts').replaceChildren(...PATTERNS.map(p => {
+    const box = el('input', { type: 'checkbox', id: 'p_' + p.id, checked: p.on });
+    box.onchange = refresh;
+    return el('label', { className: 'opt' }, box, p.label);
+  }));
+  const settings = () => ({ on: Object.fromEntries(PATTERNS.map(p => [p.id, $('p_' + p.id).checked])), words: parseWords($('words').value) });
+  const describe = counts => Object.keys(counts).map(k => `${LABEL[k]}: ${counts[k]}`).join(', ') || 'nothing found';
+
+  function run() {
+    const { on, words } = settings(), counts = {}, used = new Set();
+    const files = inputs.map(f => {
+      let name = 'scrubbed/' + f.name.replace(/^.*\//, '');
+      for (let n = 2; used.has(name.toLowerCase()); n++) name = 'scrubbed/' + f.name.replace(/^.*\//, '').replace(/(\.\w+)?$/, ` (${n})$1`);
+      used.add(name.toLowerCase());
+      return { name, text: 'doc' in f ? JSON.stringify(scrubDoc(f.doc, on, words, counts)) : scrub(f.text, on, words, counts) };
+    });
+    return { files, counts };
+  }
+
+  function refresh() {
+    const { on, words } = settings(), counts = {};
+    $('clean').value = $('text').value ? scrub($('text').value, on, words, counts) : '';
+    $('tsum').textContent = $('text').value ? 'Removed: ' + describe(counts) : '';
+    $('copy').disabled = !$('clean').value;
+    $('go').disabled = !inputs.length;
+    if (!inputs.length) { $('sum').hidden = true; return; }
+    const r = run();
+    $('sum').tBodies[0].replaceChildren(...Object.keys(r.counts).map(k =>
+      el('tr', {}, el('td', { textContent: LABEL[k] }), el('td', { className: 'n', textContent: r.counts[k] }))));
+    $('sum').hidden = !Object.keys(r.counts).length;
+    $('status').textContent = `${inputs.length} file${inputs.length > 1 ? 's' : ''} ready. ` +
+      (Object.keys(r.counts).length ? 'Found these to remove:' : 'Nothing to remove was found with the current settings.');
+  }
+
+  $('file').onchange = async ev => {
+    const problems = [];
+    for (const file of ev.target.files) {
+      $('status').textContent = `Reading ${file.name}…`;
+      try {
+        if (/\.(zip|json)$/i.test(file.name)) inputs.push(...await readExport(file));
+        else inputs.push({ name: file.name, text: await file.text() });
+      } catch (err) { problems.push(`${file.name}: ${err.message}`); }
+    }
+    ev.target.value = '';
+    refresh();
+    if (problems.length) $('status').textContent += ' Problems: ' + problems.join('; ');
+    else if (!inputs.length) $('status').textContent = 'No chat files were found in what you picked.';
+  };
+
+  $('go').onclick = async () => {
+    $('go').disabled = true;
+    try {
+      const r = run();
+      download('scrubbed-chats.zip', await makeZip(r.files));
+      $('status').textContent = `Done: scrubbed-chats.zip with ${r.files.length} file${r.files.length > 1 ? 's' : ''}. Removed: ${describe(r.counts)}.`;
+    } catch (err) { $('status').textContent = `Couldn't make the zip: ${err.message}`; }
+    $('go').disabled = false;
+  };
+
+  let timer;
+  const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+  $('text').oninput = later;
+  $('words').oninput = later;
+  $('copy').onclick = () => copy($('clean').value, $('copy'));
+}
+</script>
+</body>
+</html>
