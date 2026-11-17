@@ -1,0 +1,16 @@
+{
+  "name": "chatscrub",
+  "owner": {
+    "name": "spencerrios64"
+  },
+  "metadata": {
+    "description": "Remove API keys, emails, phone numbers and other private details from AI chats before you share or archive them."
+  },
+  "plugins": [
+    {
+      "name": "chatscrub",
+      "source": "./plugin",
+      "description": "Remove API keys, emails, phone numbers and other private details from AI chats before you share or archive them."
+    }
+  ]
+}
