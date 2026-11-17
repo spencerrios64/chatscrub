@@ -1,0 +1,9 @@
+{
+  "name": "chatscrub",
+  "version": "0.1.0",
+  "description": "Remove API keys, emails, phone numbers and other private details from AI chats before you share or archive them.",
+  "author": { "name": "spencerrios64" },
+  "homepage": "https://spencerrios64.github.io/chatscrub/",
+  "repository": "https://github.com/spencerrios64/chatscrub",
+  "keywords": ["privacy", "redact", "secrets", "api keys", "chat history"]
+}
